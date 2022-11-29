@@ -1,0 +1,2510 @@
+---
+title: "210921PupillometryReviewAnalyses"
+author: "Xi Yang"
+date: "9/21/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+# set up packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(rio)
+library(tidybayes)
+library(dplyr)
+library(ggridges)
+library(glue)
+library(stringr)
+library(forcats)
+library(magrittr)
+library(skimr)
+library(janitor)
+library(psych)
+library(lavaan)
+library(jpeg)
+library(semPlot)
+library(lavaanPlot)
+theme_set(theme_minimal())
+library(knitr)
+library(ggpubr)
+library(rstatix)
+library(kableExtra)
+library(metafor)
+library(ggplot2)
+library(brms)
+library(robvis)
+```
+
+```{r install dmetar package}
+#' Calculate I-squared values and variance distribution for multilevel meta-analysis models
+#'
+#' This function calculates values of \eqn{I^2} and the variance distribution for multilevel meta-analysis
+#' models fitted with \code{\link[metafor]{rma.mv}}.
+#'
+#'
+#' @usage mlm.variance.distribution(x)
+#'
+#' @param x An object of class \code{rma.mv}. Must be a multilevel model with two random effects (three-level meta-analysis model).
+#'
+#' @details This function estimates the distribution of variance in a three-level meta-analysis
+#' model (fitted with the \code{\link[metafor]{rma.mv}} function). The share of variance attributable to
+#' sampling error, within and between-cluster heterogeneity is calculated,
+#' and an estimate of \eqn{I^2} (total and for Level 2 and Level 3) is provided. The function uses the formula by
+#' Cheung (2014) to estimate the variance proportions attributable to each model component and to derive the \eqn{I^2} estimates.
+#'
+#'
+#' @references
+#'
+#' Harrer, M., Cuijpers, P., Furukawa, T.A, & Ebert, D. D. (2019).
+#' \emph{Doing Meta-Analysis in R: A Hands-on Guide}. DOI: 10.5281/zenodo.2551803. \href{https://bookdown.org/MathiasHarrer/Doing_Meta_Analysis_in_R/mlma.html}{Chapter 12}.
+#'
+#'Cheung, M. W. L. (2014). Modeling dependent effect sizes with three-level meta-analyses: a structural equation modeling approach. \emph{Psychological Methods, 19}(2), 211.
+#'
+#' @author Mathias Harrer & David Daniel Ebert
+#'
+#' @aliases var.comp
+#'
+#' @import ggplot2
+#' @importFrom stats model.matrix
+#'
+#' @return Returns a data frame containing the results. A plot summarizing the variance distribution and \eqn{I^2} values can be generated using \code{plot}.
+#'
+#' @export mlm.variance.distribution
+#' @export var.comp
+#'
+#' @examples
+#' # Use dat.konstantopoulos2011 from the "metafor" package
+#' library(metafor)
+#'
+#' # Build Multilevel Model (Three Levels)
+#' m = rma.mv(yi, vi, random = ~ 1 | district/school, data=dat.konstantopoulos2011)
+#'
+#' # Calculate Variance Distribution
+#' mlm.variance.distribution(m)
+#'
+#' # Use alias 'var.comp' and 'Chernobyl' data set
+#' data("Chernobyl")
+#' m2 = rma.mv(yi = z, V = var.z, data = Chernobyl, random = ~ 1 | author/es.id)
+#' res = var.comp(m2)
+#'
+#' # Print results
+#' res
+#'
+#' # Generate plot
+#' plot(res)
+
+
+
+mlm.variance.distribution = var.comp = function(x){
+
+  m = x
+
+  # Check class
+  if (!(class(m)[1] %in% c("rma.mv", "rma"))){
+    stop("x must be of class 'rma.mv'.")
+  }
+
+  # Check for three level model
+  if (m$sigma2s != 2){
+    stop("The model you provided does not seem to be a three-level model. This function can only be used for three-level models.")
+  }
+
+  # Check for right specification (nested model)
+  if (sum(grepl("/", as.character(m$random[[1]]))) < 1){
+    stop("Model must contain nested random effects. Did you use the '~ 1 | cluster/effect-within-cluster' notation in 'random'? See ?metafor::rma.mv for more details.")
+  }
+
+  # Get variance diagonal and calculate total variance
+  n = m$k.eff
+  vector.inv.var = 1/(diag(m$V))
+  sum.inv.var = sum(vector.inv.var)
+  sum.sq.inv.var = (sum.inv.var)^2
+  vector.inv.var.sq = 1/(diag(m$V)^2)
+  sum.inv.var.sq = sum(vector.inv.var.sq)
+  num = (n-1)*sum.inv.var
+  den = sum.sq.inv.var - sum.inv.var.sq
+  est.samp.var = num/den
+
+  # Calculate variance proportions
+  level1=((est.samp.var)/(m$sigma2[1]+m$sigma2[2]+est.samp.var)*100)
+  level2=((m$sigma2[2])/(m$sigma2[1]+m$sigma2[2]+est.samp.var)*100)
+  level3=((m$sigma2[1])/(m$sigma2[1]+m$sigma2[2]+est.samp.var)*100)
+
+  # Prepare df for return
+  Level=c("Level 1", "Level 2", "Level 3")
+  Variance=c(level1, level2, level3)
+  df.res=data.frame(Variance)
+  colnames(df.res) = c("% of total variance")
+  rownames(df.res) = Level
+  I2 = c("---", round(Variance[2:3], 2))
+  df.res = as.data.frame(cbind(df.res, I2))
+
+  totalI2 = Variance[2] + Variance[3]
+
+
+  # Generate plot
+  df1 = data.frame("Level" = c("Sampling Error", "Total Heterogeneity"),
+                  "Variance" = c(df.res[1,1], df.res[2,1]+df.res[3,1]),
+                  "Type" = rep(1,2))
+
+  df2 = data.frame("Level" = rownames(df.res),
+                   "Variance" = df.res[,1],
+                   "Type" = rep(2,3))
+
+  df = as.data.frame(rbind(df1, df2))
+
+
+  g = ggplot(df, aes(fill=Level, y=Variance, x=as.factor(Type))) +
+    coord_cartesian(ylim = c(0,1), clip = "off") +
+    geom_bar(stat="identity", position="fill", width = 1, color="black") +
+    scale_y_continuous(labels = scales::percent)+
+    theme(axis.title.x=element_blank(),
+          axis.text.y = element_text(color="black"),
+          axis.line.y = element_blank(),
+          axis.title.y=element_blank(),
+          axis.line.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.y = element_line(lineend = "round"),
+          legend.position = "none",
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),
+          legend.background = element_rect(linetype="solid",
+                                           colour ="black"),
+          legend.title = element_blank(),
+          legend.key.size = unit(0.75,"cm"),
+          axis.ticks.length=unit(.25, "cm"),
+          plot.margin = unit(c(1,3,1,1), "lines")) +
+    scale_fill_manual(values = c("darkseagreen3", "deepskyblue3", "darkseagreen2",
+                                 "deepskyblue1", "deepskyblue2")) +
+
+    # Add Annotation
+
+    # Total Variance
+    annotate("text", x = 1.5, y = 1.05,
+             label = paste("Total Variance:",
+                           round(m$sigma2[1]+m$sigma2[2]+est.samp.var, 3))) +
+
+    # Sampling Error
+    annotate("text", x = 1, y = (df[1,2]/2+df[2,2])/100,
+             label = paste("Sampling Error Variance: \n", round(est.samp.var, 3)), size = 3) +
+
+    # Total I2
+    annotate("text", x = 1, y = ((df[2,2])/100)/2-0.02,
+             label = bquote("Total"~italic(I)^2*":"~.(round(df[2,2],2))*"%"), size = 3) +
+    annotate("text", x = 1, y = ((df[2,2])/100)/2+0.05,
+             label = paste("Variance not attributable \n to sampling error: \n", round(m$sigma2[1]+m$sigma2[2],3)), size = 3) +
+
+    # Level 1
+    annotate("text", x = 2, y = (df[1,2]/2+df[2,2])/100, label = paste("Level 1: \n",
+                                                                       round(df$Variance[3],2), "%", sep=""), size = 3) +
+
+    # Level 2
+    annotate("text", x = 2, y = (df[5,2]+(df[4,2]/2))/100,
+             label = bquote(italic(I)[Level2]^2*":"~.(round(df[4,2],2))*"%"), size = 3) +
+
+    # Level 3
+    annotate("text", x = 2, y = (df[5,2]/2)/100,
+             label = bquote(italic(I)[Level3]^2*":"~.(round(df[5,2],2))*"%"), size = 3)
+
+  returnlist = list(results = df.res,
+                    totalI2 = totalI2,
+                    plot = g)
+  class(returnlist) = c("mlm.variance.distribution", "list")
+
+  invisible(returnlist)
+
+  returnlist
+
+}
+```
+
+# Data cleaning
+```{r main data entry}
+dir.create(here("data"))
+dir.create(here("output"))
+# folder <- "data"
+# if (file.exists(folder)) {
+# cat("The folder already exists")
+# } else {
+# dir.create(folder)
+# }
+ES <- import(here("data", "220901_ES_updated.xlsx"), setclass = "tbl_df") %>%
+  clean_names() %>% 
+  mutate(yi = abs_d*dire_1_m1_m2,
+         vi = record_v)
+```
+
+```{r IRR&rating data entry, echo = FALSE, eval = FALSE}
+dir.create(here("data"))
+dir.create(here("output"))
+# folder <- "data"
+# if (file.exists(folder)) {
+# cat("The folder already exists")
+# } else {
+# dir.create(folder)
+# }
+kmet_data <- import(here("data", "210915QualSystResults.xlsx"), setclass = "tbl_df", which = "220531_Kmet_raw") %>% clean_names()
+ESagree <- import(here("data", "210111RaterAgreementES.csv"), setclass = "tbl_df") %>% 
+  clean_names()
+```
+```{r Stone et.al., requested data, echo = FALSE, eval = FALSE}
+Stone_data <- import(here("data", "Stone_PupilMeansbyCondition.sav"), setclass = "tbl_df") %>%
+  clean_names()
+# 220127: then I realized we decided to not compute within sample effect sizes anymore...
+
+```
+```{r Gotham et.al., requested data, echo = FALSE, eval = FALSE}
+Gotham_data <- import(here("data", "Gotham_pone.0200340.s003.csv"), header = TRUE, setclass = "tbl_df") %>%
+  clean_names()
+# In the original paper: “early” pupil response as the average of baseline-corrected pupil magnitude in millimeters at seconds 2and 3(following the resolution of the light reflex in response to the change between face and mask stimuli), and “late” pupil response as the average across seconds 5–8. 
+# Hence, among s1~s8, s2~s3 will be early pupil response, s5~s8 will be late pupil response
+# dep: n = 13, BDI-II: 24.5(6.3); contrls: n = 19, BDI-II: 2.0(2.1)
+names(Gotham_data)
+Gotham_data %>% 
+  group_by(cohort) %>% 
+  summarise(mean = mean(bdi, na.rm = TRUE))
+# 0	2.105263; so cohort 0 is contrls			
+# 1	11.300000			
+# 2	24.538462; so cohort 2 is dep
+
+apply(is.na(Gotham_data), 2, which)
+which(is.na(Gotham_data), arr.ind = TRUE)
+which(complete.cases(Gotham_data) == FALSE)
+
+# one contrl subject all nan data
+Gotham_data <- Gotham_data[complete.cases(Gotham_data),] %>%
+  filter(cohort != 1) %>% 
+  select(-c(3:13))
+
+Gotham_data %>% 
+  group_by(cohort) %>% 
+  summarise(avg = mean(pd_all, na.rm = TRUE),
+            sd = sd(pd_all, na.rm = TRUE),
+            n = n())
+# pd all: m, sd, n
+# 0	0.09499627	0.05310088	18	
+# 2	0.20754041	0.08864435	13	
+
+names(Gotham_data)
+Gotham_data_long <- Gotham_data %>% select(-pd_all) %>% 
+  pivot_longer(!c(cohort, id), 
+  names_to = c("emotion","sec"),
+  names_prefix = "faces_",
+  names_pattern = "(.*)_s(.*)",
+  values_to = "pupil_change")
+# https://tidyr.tidyverse.org/reference/pivot_longer.html
+
+
+# create early, late (pupil_change)
+
+Gotham_data_overall_by_emotion <- Gotham_data_long %>% 
+  group_by(cohort, emotion) %>% 
+  summarise(mean(pupil_change),
+            sd(pupil_change),
+            n())
+
+write.csv(Gotham_data_overall_by_emotion, here("data", "220704_Gotham_ES_data_overall_by_emotion.csv"))
+
+Gotham_data_overall_by_duration_emotion <- Gotham_data_long %>% 
+  mutate(duration = case_when(as.numeric(sec) %in% c(2, 3) ~ 'early', as.numeric(sec) > 4 ~ 'late', TRUE ~ 'discard')) %>% group_by(cohort, emotion, duration) %>% 
+  summarise(mean(pupil_change, na.rm = TRUE),
+            sd(pupil_change, na.rm = TRUE),
+            n())
+
+write.csv(Gotham_data_overall_by_duration_emotion, here("data", "220704_Gotham_ES_data_overall_by_emotion_duration.csv"))
+
+Gotham_data_overall_by_duration <- Gotham_data_long %>% 
+  mutate(duration = case_when(as.numeric(sec) %in% c(2, 3) ~ 'early', as.numeric(sec) > 4 ~ 'late', TRUE ~ 'discard')) %>% group_by(cohort, duration) %>% 
+  summarise(mean(pupil_change, na.rm = TRUE),
+            sd(pupil_change, na.rm = TRUE),
+            n())
+
+write.csv(Gotham_data_overall_by_duration, here("data", "220704_Gotham_ES_data_overall_by_duration.csv"))
+```
+```{r Dezorzi et.al., requested data, echo = FALSE, eval = FALSE}
+Dezorzi_data <- import(here("data", "Dezorzi_Pupil-data.txt"), header = TRUE, setclass = "tbl_df") %>%
+  clean_names()
+# changing whole sec header for easier grouping later 
+# each sec is grouped this way: x0_1...x0__1; x1_1...x1__2; so 10 .1 sec segment to be included in each sec, excluding x0 because it's all 0 (the very start of recording)
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x1")] <- "x0__1"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x2")] <- "x1__2"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x3")] <- "x2__3"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x4")] <- "x3__4"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x5")] <- "x4__5"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x6")] <- "x5__6"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x7")] <- "x6__7"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x8")] <- "x7__8"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x9")] <- "x8__9"
+colnames(Dezorzi_data)[which(names(Dezorzi_data) == "x10")] <- "x9__10"
+
+apply(is.na(Dezorzi_data), 2, which)
+# no nans
+
+names(Dezorzi_data)
+Dezorzi_data_long <- Dezorzi_data %>% select(-x0) %>% 
+  pivot_longer(!c(group, participant, emotion), 
+  names_to = c("aggre_sec","point_sec"),
+  names_pattern = "x(.)_(.*)",
+  values_to = "pupil_change")
+# https://tidyr.tidyverse.org/reference/pivot_longer.html
+
+names(Dezorzi_data_long)
+
+Dezorzi_data_by_sec <- Dezorzi_data_long %>% 
+  group_by(group, participant, emotion, aggre_sec) %>% 
+  summarise(mean(pupil_change)) %>% 
+  mutate(sec = as.numeric(aggre_sec) + 1) %>% 
+  select(-aggre_sec) %>% 
+  rename('pupil_change' = "mean(pupil_change)")
+
+# create whole mean(pupil_change), early & late, 
+# don't drop any data for PLR, and use 5sec as the early and late cutoff
+Dezorzi_data_by_sec %>% 
+  group_by(group) %>% 
+  summarise(mean(pupil_change),
+            sd(pupil_change),
+            n())
+# High	0.1962193	0.4538765	
+# Low	0.1931628	0.5363247	
+
+Dezorzi_data_by_emotion <- Dezorzi_data_by_sec %>% 
+  group_by(group, emotion) %>% 
+  summarise(mean(pupil_change),
+            sd(pupil_change),
+            n())
+
+write.csv(Dezorzi_data_by_emotion, here("data", "220704_Dezorzi_ES_data_overall_by_emotion.csv"))
+
+Dezorzi_data_by_duration_emotion <- Dezorzi_data_by_sec %>% 
+  mutate(duration = case_when(sec < 6 ~ 'early', TRUE ~ 'late')) %>% group_by(group, emotion, duration) %>% 
+  summarise(mean(pupil_change, na.rm = TRUE),
+            sd(pupil_change, na.rm = TRUE),
+            n())
+
+write.csv(Dezorzi_data_by_duration_emotion, here("data", "220704_Dezorzi_ES_data_by_emotion_duration.csv"))
+
+Dezorzi_data_by_duration <- Dezorzi_data_by_sec %>% 
+  mutate(duration = case_when(sec < 6 ~ 'early', TRUE ~ 'late')) %>% group_by(group, duration) %>% 
+  summarise(mean(pupil_change, na.rm = TRUE),
+            sd(pupil_change, na.rm = TRUE),
+            n())
+
+write.csv(Dezorzi_data_by_duration, here("data", "220704_Dezorzi_ES_data_by_duration.csv"))
+```
+```{r McNamara et.al., requested data, echo = FALSE, eval = FALSE}
+McNamara_data <- import(here("data", "McNamara_pre_imputed_data.RData"), setclass = "tbl_df")
+
+names(McNamara_data)
+McNamara_ES_data <- McNamara_data %>% 
+  filter(group %in% c("MDD", "NP")) %>% 
+  select(contains(c("group", "pupil_bias", "dilation_peak", "dilation_mean", "_ratio", "total_peak"))) %>% 
+  pivot_longer(!group, 
+  names_to = "pupil_measure",
+  values_to = "pupil_value") %>% 
+  group_by(group, pupil_measure) %>% 
+  summarise(mean = mean(pupil_value, na.rm = TRUE), 
+            sd = sd(pupil_value, na.rm = TRUE),
+            n = sum(!is.na(pupil_value)))
+
+write.csv(McNamara_ES_data, here("data", "220624_McNamara_ES_data.csv"))
+```
+
+# Meta-analysis
+a priori analysis plan: 
+inspect a summary of the available categories to determine the feasibility of subgroup/regression analysis
+```{r subsetting groups}
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to neg stimuli during valence processing?
+# valence neg * all stimuli(1, 3, 5) * mean_type overall mean
+# N = 9
+# n = 17
+ESmain_neg <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut %in% c(1, 13),
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 1)
+
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to pos stimuli during valence processing?
+# valence neg * all stimuli(1, 3, 5) * mean_type overall mean
+# N = 8
+# n = 10
+ESmain_pos <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut %in% c(2, 23),
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 1)
+
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to neutral stimuli during valence processing?
+# valence neu * all stimuli(1, 3, 5) * mean_type overall mean
+# N = 5
+# n = 7
+ESmain_neu <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut == 3,
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 1)
+## early processing
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to neg stimuli during early valence processing?
+# valence neg * all stimuli(1, 2, 5) * mean_type early mean
+# N = 4
+# n = 8
+ESearly_neg <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut %in% c(1, 13),
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 2)
+
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to pos stimuli during early valence processing?
+# valence pos * all stimuli(1, 2, 5) * mean_type early mean
+# N = 4
+# n = 5
+ESearly_pos <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut %in% c(2, 23),
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 2)
+
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to neu stimuli during early valence processing?
+# valence neu * all stimuli(1, 2, 5) * mean_type early mean
+# N = 4
+# n = 5
+ESearly_neu <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut == 3,
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 2)
+
+## late processing
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to neg stimuli during late valence processing?
+# valence neg * all stimuli(1, 2, 5) * mean_type late mean
+# N = 8
+# n = 14
+ESlate_neg <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut %in% c(1, 13),
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 3)
+
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to pos stimuli during late valence processing?
+# valence pos * all stimuli(1, 2, 5) * mean_type late mean
+# N = 5
+# n = 6
+ESlate_pos <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut %in% c(2, 23),
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 3)
+
+# Do target population's (clinical, high risk) baseline-corrected mean pupillary motility differ from typical developing population in response to neu stimuli during late valence processing?
+# valence neu * all stimuli(1, 5) * mean_type late mean
+# N = 5
+# n = 6
+ESlate_neu <- ES %>% filter(group_comparison_1_hrlr_2_dlr_3_dhr_4_d_high_low_pretreatment_severity %in% c(1, 2),
+                        valence_1_neg_2_pos_3_neutral_4_valenced1_pos_neg_5_valenced2_pos_neg_neut == 3,
+                        mean_type_1_overall_mean_2_early_mean_3_late_mean_4_overall_peak_5_late_peak == 3)
+```
+## main
+### neg_main
+```{r neg_main 3-lvl frequentist model}
+res_main_neg <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_neg)
+summary(res_main_neg)
+forest(res_main_neg, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_main_neg)
+i2$results
+i2$totalI2
+main_neg_I2_plot <- i2$plot
+# comparing models
+res_main_neg_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_neg, sigma2 = c(0, NA))
+# or
+# res_main_neg_l3_removed <- rma(yi, vi, test = "t",  method = "REML", slab = study, data = ESmain_neg)
+summary(res_main_neg_l3_removed)
+anova(res_main_neg, res_main_neg_l3_removed)
+
+# prediction interval
+predict(res_main_neg)
+```
+```{r neg_main 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+
+# https://bookdown.org/ajkurz/DBDA_recoded/hierarchical-models.html
+# "Also note the (1 | PriPos) + (1 | PriPos:Player) syntax. In this model, we have two grouping factors, PriPos and Player. Thus we have two (|) arguments. But since players are themselves nested within positions, we have encoded that nesting with the (1 | PriPos:Player) syntax."
+# https://rpsychologist.com/r-guide-longitudinal-lme-lmer#three-level-models
+# "Subject level randomization (therapist crossed effect)" applies to our study
+# we use an intercept-only model, meaning there is no predictors, the constant, 
+# which consists of study, esid, is equal to the mean of yi
+# Hnull is the mean of yi is 0
+# http://www.philender.com/courses/linearmodels/notes1/nopredict.html#:~:text=The%20regression%20constant%20is%20also,logistic%20regression%20models%20without%20predictors.
+# yi|se(sqrt(vi))
+m.brm_main_neg <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESmain_neg,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_main_neg)
+pp_check(m.brm_main_neg)
+m.brm_main_neg %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_main_neg)
+
+# model the parameters we want to estimate probabilistically. The Bayesian model not only estimates the parameters of interest but a whole posterior distribution for τ2 and μ, which we can access quite easily.
+post.samples <- posterior_samples(m.brm_main_neg, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+# example interpretation: We see that the posterior distribution of sample data for the pooled effect size  follows a unimodal, and roughly normal distribution, peaking around the estimated values for μ. For τ, it's unimodal yet positively skewed. Peaks are smaller than the estimated τ.
+# use the ecdf function to define an ECDF in R, and then check the probability of our pooled effect being smaller than 0.30.
+ecdf_neg <- ecdf(post.samples$smd)
+plot(ecdf_neg)
+ecdf_neg(0)
+# 0.04375
+ecdf_neg(.2)
+# 0.740125
+ecdf_neg(.5)
+# 0.999125
+# example interpretation: We see that with 4.23%, the probability of our pooled effect being smaller than 0 is very low. Assuming the cut-off is valid, this would mean that the pupillary mean difference we find in this meta-analysis is likely to exist
+
+# another way to conduct 3lvl bayesian meta-analysis, probably inaccurate
+# https://www.barelysignificant.com/slides/RGUG2019#97
+# iew(ESmain_neg)
+# contrast = data.frame(contrast = c(1,2,1,2,3,4,1,2,1,2,1,2,1,1,2,1,1))
+# ESmain_neg_bays <- bind_cols(ESmain_neg, contrast)
+# install.packages("rstan", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+# m.brm <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|contrast),
+#              data = ESmain_neg_bays,
+#              prior = priors,
+#              iter = 4000)
+```
+```{r neg_main forest plot}
+post.samples <- posterior_samples(m.brm_main_neg, c("^b", "^sd"))
+ranef(m.brm_main_neg)
+study.draws <- spread_draws(m.brm_main_neg, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_main_neg, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+# forest plot
+neg_main_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightblue", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-negative", y = element_blank()) +
+  xlim(-.2, 1) + 
+  theme_minimal()
+neg_main_forest_plot_bayesian
+```
+```{r neg_main forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_main_neg, c("^b", "^sd"))
+ranef(m.brm_main_neg)
+
+study.draws_study_lvl <- spread_draws(m.brm_main_neg, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_main_neg, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+neg_main_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+neg_main_forest_plot_bayesian_study_lvl
+```
+### pos_main
+```{r pos_main 3-lvl frequentist model}
+res_main_pos <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_pos)
+summary(res_main_pos)
+forest(res_main_pos, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_main_pos)
+i2$results
+i2$totalI2
+main_pos_I2_plot <- i2$plot
+# comparing models
+res_main_pos_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_pos, sigma2 = c(0, NA))
+summary(res_main_pos_l3_removed)
+anova(res_main_pos, res_main_pos_l3_removed)
+
+predict(res_main_pos)
+```
+```{r pos_main 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_main_pos <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESmain_pos,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_main_pos)
+pp_check(m.brm_main_pos)
+m.brm_main_pos %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_main_pos)
+post.samples <- posterior_samples(m.brm_main_pos, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+pos_mu_plot <- ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+pos_tau_across_study_plot <- ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+pos_tau_within_study_plot <- ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+
+ecdf_pos <- ecdf(post.samples$smd)
+plot(ecdf_pos)
+ecdf_pos(0)
+# 0.45525
+ecdf_pos(.2)
+# 0.790875
+ecdf_pos(.5)
+# 0.96925
+```
+```{r pos_main forest plot}
+post.samples <- posterior_samples(m.brm_main_pos, c("^b", "^sd"))
+ranef(m.brm_main_pos)
+study.draws <- spread_draws(m.brm_main_pos, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_main_pos, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+pos_main_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightgreen", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-positive", y = element_blank()) +
+  xlim(-1.75, 3) +
+  theme_minimal()
+pos_main_forest_plot_bayesian
+```
+```{r pos_main forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_main_pos, c("^b", "^sd"))
+ranef(m.brm_main_pos)
+
+study.draws_study_lvl <- spread_draws(m.brm_main_pos, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_main_pos, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+pos_main_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_pos)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_main_pos)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+forest.data.summary_study_lvl
+```
+### neu_main
+```{r neu_main 3-lvl frequentist model}
+res_main_neu <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_neu)
+summary(res_main_neu)
+forest(res_main_neu, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_main_neu)
+i2$results
+i2$totalI2
+main_neu_I2_plot <- i2$plot
+# comparing models
+res_main_neu_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_neu, sigma2 = c(0, NA))
+summary(res_main_neu_l3_removed)
+anova(res_main_neu, res_main_neu_l3_removed)
+
+predict(res_main_neu)
+```
+```{r neu_main 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_main_neu <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESmain_neu,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_main_neu)
+pp_check(m.brm_main_neu)
+m.brm_main_neu %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_main_neu)
+post.samples <- posterior_samples(m.brm_main_neu, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+
+ecdf_neu <- ecdf(post.samples$smd)
+plot(ecdf_neu)
+ecdf_neu(0)
+# 0.3697875
+ecdf_neu(.2)
+# 0.715375
+ecdf_neu(.5)
+# 0.953625
+```
+```{r neu_main forest plot}
+post.samples <- posterior_samples(m.brm_main_neu, c("^b", "^sd"))
+ranef(m.brm_main_neu)
+study.draws <- spread_draws(m.brm_main_neu, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_main_neu, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+neu_main_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "gray", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_main_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-neutral", y = element_blank()) +
+  xlim(-.75, 2) +
+  theme_minimal()
+neu_main_forest_plot_bayesian
+```
+```{r neu_main forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_main_neu, c("^b", "^sd"))
+ranef(m.brm_main_neu)
+
+study.draws_study_lvl <- spread_draws(m.brm_main_neu, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_main_neu, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+neu_main_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_neu)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_main_neu)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+neu_main_forest_plot_bayesian_study_lvl
+```
+```{r combine main analyses plots}
+# ECDF plots
+# https://stackoverflow.com/questions/20601642/how-to-plot-multiple-ecdfs-on-one-plot-in-different-colors-in-r
+ecdf_frame <- data.frame(x = c(-2,2))
+# create a list of calls to `stat_function` with the colours you wish to use
+ecdf_func <- Map(f = stat_function, 
+                 colour = c('lightblue', 'lightgreen', 'gray'),
+                 fun = list(ecdf_neg, ecdf_pos, ecdf_neu))
+ggplot(data = ecdf_frame, aes(x = x)) + ecdf_func +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  labs(x = "SMD values", y = "Fn(SMD values)")
+
+# forest plots
+library("gridExtra")
+right_plots <- grid.arrange(pos_main_forest_plot_bayesian, neu_main_forest_plot_bayesian, nrow = 2) 
+grid.arrange(neg_main_forest_plot_bayesian, right_plots, ncol = 2)
+
+# I2 plots
+grid.arrange(main_neg_I2_plot, main_pos_I2_plot, main_neu_I2_plot, ncol = 3)
+# the text image ratio is a bit off...
+```
+## early
+### neg_early
+```{r neg_early 3-lvl frequentist model}
+res_early_neg <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESearly_neg)
+summary(res_early_neg)
+forest(res_early_neg, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_early_neg)
+i2$results
+i2$totalI2
+i2$plot
+# comparing models
+res_early_neg_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESearly_neg, sigma2 = c(0, NA))
+# or
+# res_early_neg_l3_removed <- rma(yi, vi, test = "t",  method = "REML", slab = study, data = ESearly_neg)
+summary(res_early_neg_l3_removed)
+anova(res_early_neg, res_early_neg_l3_removed)
+
+predict(res_early_neg)
+```
+```{r neg_early 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+
+# https://bookdown.org/ajkurz/DBDA_recoded/hierarchical-models.html
+# "Also note the (1 | PriPos) + (1 | PriPos:Player) syntax. In this model, we have two grouping factors, PriPos and Player. Thus we have two (|) arguments. But since players are themselves nested within positions, we have encoded that nesting with the (1 | PriPos:Player) syntax."
+# https://rpsychologist.com/r-guide-longitudinal-lme-lmer#three-level-models
+# "Subject level randomization (therapist crossed effect)" applies to our study
+# we use an intercept-only model, meaning there is no predictors, the constant, 
+# which consists of study, esid, is equal to the mean of yi
+# Hnull is the mean of yi is 0
+# http://www.philender.com/courses/linearmodels/notes1/nopredict.html#:~:text=The%20regression%20constant%20is%20also,logistic%20regression%20models%20without%20predictors.
+# yi|se(sqrt(vi))
+m.brm_early_neg <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESearly_neg,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_early_neg)
+pp_check(m.brm_early_neg)
+m.brm_early_neg %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_early_neg)
+
+# model the parameters we want to estimate probabilistically. The Bayesian model not only estimates the parameters of interest but a whole posterior distribution for τ2 and μ, which we can access quite easily.
+post.samples <- posterior_samples(m.brm_early_neg, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+# example interpretation: We see that the posterior distribution of sample data for the pooled effect size  follows a unimodal, and roughly normal distribution, peaking around the estimated values for μ. For τ, it's unimodal yet positively skewed. Peaks are smaller than the estimated τ.
+# use the ecdf function to define an ECDF in R, and then check the probability of our pooled effect being smaller than 0.30.
+smd.ecdf <- ecdf(post.samples$smd)
+plot(smd.ecdf)
+smd.ecdf(0)
+# 0.04375
+smd.ecdf(.2)
+# 0.740125
+smd.ecdf(.5)
+# 0.999125
+# example interpretation: We see that with 4.23%, the probability of our pooled effect being smaller than 0 is very low. Assuming the cut-off is valid, this would mean that the pupillary mean difference we find in this meta-analysis is likely to exist
+
+# another way to conduct 3lvl bayesian meta-analysis, probably inaccurate
+# https://www.barelysignificant.com/slides/RGUG2019#97
+# iew(ESearly_neg)
+# contrast = data.frame(contrast = c(1,2,1,2,3,4,1,2,1,2,1,2,1,1,2,1,1))
+# ESearly_neg_bays <- bind_cols(ESearly_neg, contrast)
+# install.packages("rstan", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+# m.brm <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|contrast),
+#              data = ESearly_neg_bays,
+#              prior = priors,
+#              iter = 4000)
+```
+```{r neg_early forest plot}
+post.samples <- posterior_samples(m.brm_early_neg, c("^b", "^sd"))
+ranef(m.brm_early_neg)
+study.draws <- spread_draws(m.brm_early_neg, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_early_neg, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+neg_early_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightblue", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_early_neg)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_early_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-early-negative", y = element_blank()) +
+  xlim(-1, NA) + 
+  theme_minimal()
+neg_early_forest_plot_bayesian
+```
+```{r neg_early forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_early_neg, c("^b", "^sd"))
+ranef(m.brm_early_neg)
+
+study.draws_study_lvl <- spread_draws(m.brm_early_neg, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_early_neg, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+neg_early_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_early_neg)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_early_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+neg_early_forest_plot_bayesian_study_lvl
+```
+### pos_early
+```{r pos_early 3-lvl frequentist model}
+res_early_pos <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESearly_pos)
+summary(res_early_pos)
+forest(res_early_pos, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_early_pos)
+i2$results
+i2$totalI2
+i2$plot
+# comparing models
+res_early_pos_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESearly_pos, sigma2 = c(0, NA))
+summary(res_early_pos_l3_removed)
+anova(res_early_pos, res_early_pos_l3_removed)
+
+predict(res_early_pos)
+```
+```{r pos_early 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_early_pos <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESearly_pos,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_early_pos)
+pp_check(m.brm_early_pos)
+m.brm_early_pos %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_early_pos)
+post.samples <- posterior_samples(m.brm_early_pos, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+
+smd.ecdf <- ecdf(post.samples$smd)
+plot(smd.ecdf)
+smd.ecdf(0)
+# 0.415375
+smd.ecdf(.2)
+# 0.6465
+smd.ecdf(.5)
+# 0.87175
+```
+```{r pos_early forest plot}
+post.samples <- posterior_samples(m.brm_early_pos, c("^b", "^sd"))
+ranef(m.brm_early_pos)
+study.draws <- spread_draws(m.brm_early_pos, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_early_pos, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+pos_early_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightgreen", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_early_pos)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_early_pos)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-early-positive", y = element_blank()) +
+  xlim(-1.25, NA) + 
+  theme_minimal()
+pos_early_forest_plot_bayesian
+```
+```{r pos_early forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_early_pos, c("^b", "^sd"))
+ranef(m.brm_early_pos)
+
+study.draws_study_lvl <- spread_draws(m.brm_early_pos, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_early_pos, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+pos_early_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_early_pos)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_early_pos)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+pos_early_forest_plot_bayesian_study_lvl
+```
+### neu_early
+```{r neu_early 3-lvl frequentist model}
+res_early_neu <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESearly_neu)
+summary(res_early_neu)
+forest(res_early_neu, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_early_neu)
+i2$results
+i2$totalI2
+i2$plot
+# comparing models
+res_early_neu_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESearly_neu, sigma2 = c(0, NA))
+summary(res_early_neu_l3_removed)
+anova(res_early_neu, res_early_neu_l3_removed)
+
+predict(res_early_neu)
+```
+```{r neu_early 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_early_neu <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESearly_neu,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_early_neu)
+pp_check(m.brm_early_neu)
+m.brm_early_neu %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_early_neu)
+post.samples <- posterior_samples(m.brm_early_neu, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+
+smd.ecdf <- ecdf(post.samples$smd)
+plot(smd.ecdf)
+smd.ecdf(0)
+# 0.7015
+smd.ecdf(.2)
+# 0.873875
+smd.ecdf(.5)
+# 0.968375
+```
+```{r neu_early forest plot}
+post.samples <- posterior_samples(m.brm_early_neu, c("^b", "^sd"))
+ranef(m.brm_early_neu)
+study.draws <- spread_draws(m.brm_early_neu, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_early_neu, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+neu_early_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_early_neu)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_early_neu)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-early-neutral", y = element_blank()) +
+  xlim(-1.25, NA) + 
+  theme_minimal()
+neu_early_forest_plot_bayesian
+```
+```{r neu_early forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_early_neu, c("^b", "^sd"))
+ranef(m.brm_early_neu)
+
+study.draws_study_lvl <- spread_draws(m.brm_early_neu, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_early_neu, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+neu_early_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_early_neu)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_early_neu)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+neu_early_forest_plot_bayesian_study_lvl
+```
+```{r combine early phase analyses plots}
+# forest plots
+library("gridExtra")
+right_plots <- grid.arrange(pos_early_forest_plot_bayesian, neu_early_forest_plot_bayesian, nrow = 2) 
+grid.arrange(neg_early_forest_plot_bayesian, right_plots, ncol = 2)
+```
+
+## late
+### neg_late
+```{r neg_late 3-lvl frequentist model}
+res_late_neg <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESlate_neg)
+summary(res_late_neg)
+forest(res_late_neg, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_late_neg)
+i2$results
+i2$totalI2
+i2$plot
+# comparing models
+res_late_neg_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESlate_neg, sigma2 = c(0, NA))
+summary(res_late_neg_l3_removed)
+anova(res_late_neg, res_late_neg_l3_removed)
+
+predict(res_late_neg)
+```
+```{r neg_late 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_late_neg <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESlate_neg,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_late_neg)
+pp_check(m.brm_late_neg)
+m.brm_late_neg %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+ranef(m.brm_late_neg)
+
+post.samples <- posterior_samples(m.brm_late_neg, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+# We see that the posterior distribution of sample data for the pooled effect size  follows a unimodal, and roughly normal distribution, peaking around the estimated values for μ. For τ, it's unimodal yet positively skewed. Peaks are smaller than the estimated τ.
+# use the ecdf function to define an ECDF in R, and then check the probability of our pooled effect being smaller than 0.30.
+smd.ecdf <- ecdf(post.samples$smd)
+plot(smd.ecdf)
+smd.ecdf(0)
+# 0.22325
+smd.ecdf(.2)
+# 0.65375
+smd.ecdf(.5)
+# 0.970375
+```
+```{r neg_late forest plot}
+post.samples <- posterior_samples(m.brm_late_neg, c("^b", "^sd"))
+ranef(m.brm_late_neg)
+study.draws <- spread_draws(m.brm_late_neg, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_late_neg, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+neg_late_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightblue", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_late_neg)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_late_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-late-negative", y = element_blank()) +
+  xlim(-1.25, NA) + 
+  theme_minimal()
+neg_late_forest_plot_bayesian
+```
+```{r neg_late forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_late_neg, c("^b", "^sd"))
+ranef(m.brm_late_neg)
+
+study.draws_study_lvl <- spread_draws(m.brm_late_neg, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_late_neg, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+neg_late_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_late_neg)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_late_neg)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+neg_late_forest_plot_bayesian_study_lvl
+```
+### pos_late
+```{r pos_late 3-lvl frequentist model}
+res_late_pos <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESlate_pos)
+summary(res_late_pos)
+forest(res_late_pos, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_late_pos)
+i2$results
+i2$totalI2
+i2$plot
+# comparing models
+res_late_pos_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESlate_pos, sigma2 = c(0, NA))
+summary(res_late_pos_l3_removed)
+anova(res_late_pos, res_late_pos_l3_removed)
+
+predict(res_late_pos)
+```
+```{r pos_late 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_late_pos <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESlate_pos,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_late_pos)
+pp_check(m.brm_late_pos)
+m.brm_late_pos %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_late_pos)
+post.samples <- posterior_samples(m.brm_late_pos, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+
+smd.ecdf <- ecdf(post.samples$smd)
+plot(smd.ecdf)
+smd.ecdf(0)
+# 0.0765
+smd.ecdf(.2)
+# 0.208125
+smd.ecdf(.5)
+# 0.62325
+```
+```{r pos_late forest plot}
+post.samples <- posterior_samples(m.brm_late_pos, c("^b", "^sd"))
+ranef(m.brm_late_pos)
+study.draws <- spread_draws(m.brm_late_pos, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_late_pos, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+pos_late_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightgreen", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_late_pos)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_late_pos)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-late-positive", y = element_blank()) +
+  xlim(-.5, NA) + 
+  theme_minimal()
+pos_late_forest_plot_bayesian
+```
+```{r pos_late forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_late_pos, c("^b", "^sd"))
+ranef(m.brm_late_pos)
+
+study.draws_study_lvl <- spread_draws(m.brm_late_pos, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_late_pos, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+pos_late_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_late_pos)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_late_pos)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+pos_late_forest_plot_bayesian_study_lvl
+```
+### neu_late
+```{r neu_late 3-lvl frequentist model}
+res_late_neu <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESlate_neu)
+summary(res_late_neu)
+forest(res_late_neu, efac=c(0,0.5))
+# distribution of variance across levels
+i2 <- var.comp(res_late_neu)
+i2$results
+i2$totalI2
+i2$plot
+# comparing models
+res_late_neu_l3_removed <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESlate_neu, sigma2 = c(0, NA))
+summary(res_late_neu_l3_removed)
+anova(res_late_neu, res_late_neu_l3_removed)
+
+predict(res_late_neu)
+```
+```{r neu_late 3-lvl Bayesian model}
+priors <- c(prior(normal(0,1), class = Intercept),
+            prior(cauchy(0,0.5), class = sd))
+m.brm_late_neu <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESlate_neu,
+             prior = priors,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_late_neu)
+pp_check(m.brm_late_neu)
+m.brm_late_neu %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+ranef(m.brm_late_neu)
+post.samples <- posterior_samples(m.brm_late_neu, c("^b", "^sd"))
+names(post.samples)
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+
+smd.ecdf <- ecdf(post.samples$smd)
+plot(smd.ecdf)
+smd.ecdf(0)
+# 0.36925
+smd.ecdf(.2)
+# 0.715375
+smd.ecdf(.5)
+# 0.953625
+```
+```{r neu_late forest plot}
+post.samples <- posterior_samples(m.brm_late_neu, c("^b", "^sd"))
+ranef(m.brm_late_neu)
+study.draws <- spread_draws(m.brm_late_neu, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_late_neu, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+neu_late_forest_plot_bayesian <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_late_neu)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_late_neu)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-early-neutral", y = element_blank()) +
+  xlim(-1, NA) + 
+  theme_minimal()
+neu_late_forest_plot_bayesian
+```
+```{r neu_late forest plot_study_lvl}
+post.samples <- posterior_samples(m.brm_late_neu, c("^b", "^sd"))
+ranef(m.brm_late_neu)
+
+study.draws_study_lvl <- spread_draws(m.brm_late_neu, r_study[study,], b_Intercept) %>% mutate(b_Intercept = r_study + b_Intercept)
+study.draws_study_lvl$study <- as.character(study.draws_study_lvl$study)
+
+pooled.effect.draws_study_lvl <- spread_draws(m.brm_late_neu, b_Intercept) %>%
+  mutate(study = "Pooled Effect")
+  
+
+forest.data_study_lvl <- bind_rows(study.draws_study_lvl, 
+                         pooled.effect.draws_study_lvl) %>% 
+   ungroup() %>% 
+   mutate(study = reorder(study, b_Intercept))
+
+forest.data.summary_study_lvl <- group_by(forest.data_study_lvl, study) %>% 
+  mean_qi(b_Intercept)
+
+neu_late_forest_plot_bayesian_study_lvl <- ggplot(aes(b_Intercept, 
+           relevel(study, "Pooled Effect", 
+                   after = Inf)), 
+       data = forest.data_study_lvl) +
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_late_neu)[1, 1], 
+             color = "grey", size = 1) +
+  geom_vline(xintercept = fixef(m.brm_late_neu)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = 1) +
+  
+  # Add densities
+  geom_density_ridges(fill = "grey", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = 1,
+                      alpha = 0.8) +
+  geom_pointintervalh(data = forest.data.summary_study_lvl, 
+                      size = 1) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary_study_lvl, 
+                             is.numeric, round, 2),
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "Standardized Mean Difference", # summary measure
+       y = element_blank()) +
+  theme_minimal()
+neu_late_forest_plot_bayesian_study_lvl
+```
+```{r combine late phase analyses plots}
+# forest plots
+library("gridExtra")
+right_plots <- grid.arrange(pos_late_forest_plot_bayesian, neu_late_forest_plot_bayesian, nrow = 2) 
+grid.arrange(neg_late_forest_plot_bayesian, right_plots, ncol = 2)
+```
+### Sensitivity analyses - Negative Valence
+```{r sensitivity Bayesian analyses, eval = FALSE, echo = FALSE}
+# different priors
+priors_sens <- c(prior(normal(0,0.5), class = Intercept),
+            prior(cauchy(0,0.4), class = sd))
+m.brm_main_neg_sens <- brm(yi|se(sqrt(vi)) ~ 1 + (1|study) + (1|study:esid), 
+             data = ESmain_neg,
+             prior = priors_sens,
+             iter = 4000,
+             control = list(adapt_delta = .99))
+# Population-Level Effects. This section represents the “fixed” population parameters we modeled. In our case, this is μ, the overall effect size of our meta-analysis: .15, -.03~.34
+summary(m.brm_main_neg_sens)
+pp_check(m.brm_main_neg_sens)
+m.brm_main_neg_sens %>% plot(combo = c("hist", "trace"), theme = theme_bw(base_size = 18))
+# extract the estimated deviation of each study’s “true” effect size from the pooled effect
+ranef(m.brm_main_neg_sens)
+
+# model the parameters we want to estimate probabilistically. The Bayesian model not only estimates the parameters of interest but a whole posterior distribution for τ2 and μ, which we can access quite easily.
+post.samples <- posterior_samples(m.brm_main_neg_sens, c("^b", "^sd"))
+names(post.samples)
+# b_Intercept, the posterior sample data for the pooled effect size, and sd_x_Intercept, the one for the between-x heterogeneity τ
+names(post.samples) <- c("smd", "tau_study", "tau_study_esid")
+
+ggplot(aes(x = smd), data = post.samples) +
+  geom_density(fill = "lightblue",                # set the color
+               color = "lightblue", alpha = 0.7) +  
+  geom_point(y = 0,                               # add point at mean
+             x = mean(post.samples$smd)) +
+  labs(x = expression(italic(SMD)),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study_esid), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study_esid)) +        # add point at mean
+    labs(x = expression(tau_study_esid),
+       y = element_blank()) +
+  theme_minimal()
+
+ggplot(aes(x = tau_study), data = post.samples) +
+  geom_density(fill = "lightgreen",               # set the color
+               color = "lightgreen", alpha = 0.7) +  
+  geom_point(y = 0, 
+             x = mean(post.samples$tau_study)) +        # add point at mean
+    labs(x = expression(tau_study),
+       y = element_blank()) +
+  theme_minimal()
+# example interpretation: We see that the posterior distribution of sample data for the pooled effect size  follows a unimodal, and roughly normal distribution, peaking around the estimated values for μ. For τ, it's unimodal yet positively skewed. Peaks are smaller than the estimated τ.
+# use the ecdf function to define an ECDF in R, and then check the probability of our pooled effect being smaller than 0.30.
+ecdf_neg_sens <- ecdf(post.samples$smd)
+plot(ecdf_neg)
+ecdf_neg_sens(0)
+# 0.047
+ecdf_neg_sens(.2)
+# 0.766
+post.samples <- posterior_samples(m.brm_main_neg_sens, c("^b", "^sd"))
+ranef(m.brm_main_neg)
+study.draws <- spread_draws(m.brm_main_neg_sens, `r_study:esid`[`study:esid`,], b_Intercept) %>% mutate(b_Intercept = `r_study:esid` + b_Intercept)
+
+pooled.effect.draws <- spread_draws(m.brm_main_neg_sens, b_Intercept) %>%
+  mutate(`study:esid` = "PE")
+
+# if order by b_Intercept value
+forest.data <- bind_rows(study.draws, 
+                         pooled.effect.draws) %>% 
+   ungroup() %>% 
+   mutate(`study:esid` = reorder(`study:esid`, b_Intercept))
+
+# if order by study
+#forest.data <- bind_rows(study.draws, 
+#                         pooled.effect.draws) %>% 
+#   ungroup() %>% 
+#   mutate(`study:esid` = reorder(`study:esid`, `study:esid`))
+
+forest.data.summary <- group_by(forest.data, `study:esid`) %>% 
+  mean_qi(b_Intercept)
+
+# forest plot
+neg_main_forest_plot_bayesian_sens <- ggplot(aes(b_Intercept, 
+           relevel(`study:esid`, "PE", 
+                   after = Inf)), 
+       data = forest.data) +
+  
+  # Add densities
+  geom_density_ridges(fill = "lightblue", 
+                      rel_min_height = 0.01, 
+                      col = NA, scale = .8,
+                      alpha = 0.7) +
+  geom_pointintervalh(data = forest.data.summary, 
+                      size = 1, color = "grey") + 
+  
+  # Add vertical lines for pooled effect and CI
+  geom_vline(xintercept = fixef(m.brm_main_neg_sens)[1, 1], 
+             color = "grey", size = .7) +
+  geom_vline(xintercept = fixef(m.brm_main_neg_sens)[1, 3:4], 
+             color = "grey", linetype = 2) +
+  geom_vline(xintercept = 0, color = "black", 
+             size = .5) +
+  
+  # Add text and labels
+  geom_text(data = mutate_if(forest.data.summary, 
+                             is.numeric, round, 2), 
+            size = 3,
+    aes(label = glue("{b_Intercept} [{.lower}, {.upper}]"), 
+        x = Inf), hjust = "inward") +
+  labs(x = "SMD-negative-sens", y = element_blank()) +
+  #xlim(-.2, 1) + 
+  theme_minimal()
+neg_main_forest_plot_bayesian_sens
+```
+
+# IRR Analysis
+```{r interrater agreement, eval = FALSE, echo = FALSE}
+#"if you’re interested in the inter-rater reliability of a scale mean, compute ICC on that scale mean – not the individual items. For example, if you have a 10-item unidimensional scale, calculate the scale mean for each of your rater/target combinations first (i.e. one mean score per rater per ratee), and then use that scale mean as the target of your computation of ICC. https://neoacademic.com/2011/11/16/computing-intraclass-correlations-icc-as-estimates-of-interrater-reliability-in-spss/"
+#"If the raters are rating persons on multiple yes-or-no items, we would need to report kappa for each item. This coefficient does not, therefore, reveal an overall estimate of rater agreement across multiple items. http://www2.hawaii.edu/~georgeha/Handouts/meas/Exercises/_book/interrater.html"
+library(irr)
+library(BlandAltmanLeh)
+# https://cran.r-project.org/web/packages/BlandAltmanLeh/index.html
+
+# sum scores for each article (Bland-Altman plots & ICC)
+kmet_sum_data <- kmet_data %>% 
+  group_by(article_id) %>% 
+  summarise(sum1 = sum(rating_xy)/22,
+            sum2 = sum(rating_af)/22)
+
+describe(kmet_sum_data) %>% 
+  write.csv(file = "IRR mean descriptives.csv")
+
+kmet_sum_all <- kmet_sum_data %>% pivot_longer(c(2, 3))
+describe(kmet_sum_all$value) %>% 
+  write.csv(file = "IRR mean descriptives_2.csv")
+
+bland.altman.plot(kmet_sum_data$sum1, kmet_sum_data$sum2, main="Bland Altman Plot", xlab="Means", ylab="Differences")
+
+icc(ratings = kmet_sum_data[,c(2,3)], 
+    model = "twoway", 
+    type = "agreement",
+    unit = "average")
+
+# Average Score Intraclass Correlation
+ #   Model: twoway 
+ #   Type : agreement 
+ # 
+ #   Subjects = 22 
+ #     Raters = 2 
+ #   ICC(A,2) = 0.853
+ # 
+ # F-Test, H0: r0 = 0 ; H1: r0 > 0 
+ # F(21,21.3) = 7.09 , p = 1.54e-05 
+ # 
+ # 95%-Confidence Interval for ICC Population Values:
+ #  0.651 < ICC < 0.939
+
+kappa2(ratings = kmet_sum_data[,c(2,3)], 
+    weight = "unweighted")
+ # Cohen's Kappa for 2 Raters (Weights: unweighted)
+ # 
+ # Subjects = 22 
+ #   Raters = 2 
+ #    Kappa = 0.185 
+ # 
+ #        z = 2.04 
+ #  p-value = 0.0415 
+
+### across items (weighted kappa & ICC)
+
+# not sure how to assign the weight, so provide unweighted kappa
+icc(ratings = kmet_data[,c(3,4)], 
+    model = "twoway", 
+    type = "agreement",
+    unit = "single")
+ #  Single Score Intraclass Correlation
+ # 
+ #   Model: twoway 
+ #   Type : agreement 
+ # 
+ #   Subjects = 242 
+ #     Raters = 2 
+ #   ICC(A,1) = 0.802
+ # 
+ # F-Test, H0: r0 = 0 ; H1: r0 > 0 
+ # F(241,242) = 9.15 , p = 1.73e-56 
+ # 
+ # 95%-Confidence Interval for ICC Population Values:
+ #  0.753 < ICC < 0.843
+
+# low variations and high agreement in this case actually contribute to very low ICC
+# https://www.researchgate.net/post/Why-am-I-getting-a-low-ICC-even-though-agreement-is-objectively-high
+# similar issue with kappa. See the reference: High agreement but low kappa: I. The problems of two paradoxes
+kappa2(ratings = kmet_data[,c(3,4)], 
+    weight = "unweighted")
+# Cohen's Kappa for 2 Raters (Weights: unweighted)
+# 
+#  Subjects = 242 
+#    Raters = 2 
+#     Kappa = 0.75 
+# 
+#         z = 13.6 
+#   p-value = 0 
+
+# across rater descriptives
+
+kmet_sum_data
+
+kmet_items_data <- kmet_data %>% pivot_wider(names_from = kmet_criteria, values_from = c(rating_xy, rating_af))
+#### across each paper (weighted kappa & ICC)
+# the below hasn't been used yet
+kmet_items_data <- kmet_data %>% pivot_wider(names_from = kmet_criteria, values_from = c(rating_xy, rating_af))
+
+article_data <- main_data %>% 
+  pivot_wider(names_from = article_id, values_from = c(xy, af))
+icc(ratings = article_data[,c(2,13)], 
+    model = "twoway", 
+    type = "agreement",
+    unit = "single")
+
+# ES (d) & v computations
+# model: 1-way or 2-way model. 2-way because each item is assessed by all raters who have been randomly selected from a larger population of raters. 1-way means each item is assessed by a different set of randomly selected raters
+# type: the absolute value or consistency of ratings is important
+# "Absolute agreement concerns if different raters assign the same score to the same subject. Conversely, consistency definition concerns if raters’ scores to the same group of subjects are correlated in an additive manner"
+# In a given example, we use agreement when the purpose is to select students who are rated above or below a preset standard absolute score, the scores from the three raters need to be absolutely similar on a mathematical level. Instead of ranking the students. So it's appropriate to use agreement for all the ICC calculations. 
+# single: unit of analysis is an individual rating (not the mean of several ratings)
+# d
+icc(ratings = ESagree[,c(1,2)], 
+    model = "twoway", 
+    type = "agreement",
+    unit = "single")
+# v
+# the following result is not reported because it's ES is most important and ICC
+# gives a low value that may confuse uninformed readers (low variations and high agreement in this case actually contribute to very low ICC)
+
+icc(ratings = ESagree[,c(3,4)], 
+    model = "twoway", 
+    type = "agreement",
+    unit = "single")
+
+```
+
+# Additional Plots
+```{r kmet risk of bias analysis traffic plot}
+# reference: https://bookdown.org/MathiasHarrer/Doing_Meta_Analysis_in_R/risk-of-bias-plots.html
+# template: ROB1
+# The first column is labelled “Study” and contains the study identifier (e.g. Anthony et al, 2019)
+# The second-to-last column is labelled “Overall” and contains the overall risk-of-bias judgments
+# The last column is labelled “Weight” and contains some measure of study precision e.g. the weight assigned to each study in the meta-analysis, or if no meta-analysis was performed, the sample size of each study). See Chapter 4.1.1 for more details.
+# All other columns contain the results of the risk-of bias assessment for a specific domain.
+# Our criteria: high: [0, 1), some concern: [1, 1.5), low concern: [1.5, 2] 
+Study <- c(1:22)
+Weight <- c(50, 24, 53, 45, 23, 24, 39, 60, 13, 50, 25, 21, 57, 18, 59, 28, 14, 36, 20, 24, 20, 20)
+kmet_target_group_weight <- data.frame(Study, Weight)
+kmet_target_group_weight %<>% 
+  mutate(Study = as.factor(Study))
+kmet_plot_data <- kmet_data %>% 
+  rename(Study = article_id) %>% 
+  mutate(rating = (rating_xy + rating_af)/2,
+         Study = as.factor(Study)) %>% 
+  mutate(rating_cat = case_when(rating < 1 ~ "High risk of bias",
+                                rating >= 1.5 ~ "Low risk of bias",
+                                TRUE ~ "Some concerns"),
+         full_kmet_criteria = case_when(kmet_criteria == 1 ~ "Question/objective sufficiently described",
+                                        kmet_criteria == 2 ~ "Design evident & appropriate",
+                                        kmet_criteria == 3 ~ "Method of subject selection appropriate",
+                                        kmet_criteria == 4 ~ "Input variables sufficiently described",
+                                        kmet_criteria == 8 ~ "Measurement/misclassification bias",
+                                        kmet_criteria == 9 ~ "Sample size appropriate",
+                                        kmet_criteria == 10 ~ "Analysis described and appropriate",
+                                        kmet_criteria == 11 ~ "Main outcomes estimate(s) of variance",
+                                        kmet_criteria == 12 ~ "Controlled for confounding", 
+                                        kmet_criteria == 13 ~ "Results reported in sufficient detail",
+                                        kmet_criteria == 14 ~ "Results support the conclusions")) %>% 
+  select(c(Study, rating_cat, full_kmet_criteria)) %>% 
+  pivot_wider(names_from = full_kmet_criteria, values_from = rating_cat) %>%
+  # rowwise() %>% 
+  # mutate(Overall = sum(across(where(is.numeric)))/(28-(3*2))) %>% 
+  left_join(kmet_target_group_weight, by = "Study")
+  
+  
+# https://www.delftstack.com/howto/r/sum-multiple-columns-in-r-dataframe/
+# https://dplyr.tidyverse.org/articles/colwise.html
+rob_summary(data = kmet_plot_data,
+            tool = "ROB1",
+            # overall = TRUE,
+            weighted = FALSE,
+            colour = "colourblind")
+
+# Supplementary study-level traffic light plot, work-in-progress
+rob_traffic_light(data = kmet_plot_data,
+            tool = "ROB1",
+            colour = "colourblind",
+            psize = 8)
+```
+```{r publication bias plot}
+# https://bookdown.org/MathiasHarrer/Doing_Meta_Analysis_in_R/pub-bias.html
+# Make sure meta and dmetar are already loaded
+library(metafor)
+ 
+### fit equal-effects model
+res <- rma(yi, vi, data=dat.hackshaw1998, measure="OR", method="EE")
+
+res_main_neg <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "REML", slab = study, data = ESmain_neg)
+
+res_main_neg_funnel <- rma.mv(yi = yi, V = vi, random = ~ 1 | study/esid, test = "t",  method = "EE", slab = source, data = ESmain_neg)
+
+
+### set up 2x2 array for plotting
+par(mfrow=c(2,2))
+ 
+### draw funnel plots
+funnel(res_main_neg_funnel, main="Standard Error")
+funnel(res_main_neg_funnel, yaxis="vi", main="Sampling Variance")
+funnel(res_main_neg_funnel, yaxis="seinv", main="Inverse Standard Error")
+funnel(res_main_neg_funnel, yaxis="vinv", main="Inverse Sampling Variance")
+
+funnel(ESmain_neg$yi, ESmain_neg$vi, yaxis="seinv",
+       xlim=c(-3,2), ylim=c(.00001,8), xaxs="i", yaxs="i", las=1,
+       level=c(.10, .05, .01), shade=c("white", "gray55", "gray75"),
+       legend=TRUE, back="gray90", ylab="Precision (1/se)", lty=0)
+
+```
+
+```{r citations, eval = FALSE, echo = FALSE}
+citation("irr")
+citation("metafor")
+```
+
+
+
+
+
